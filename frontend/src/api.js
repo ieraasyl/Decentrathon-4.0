@@ -1,8 +1,5 @@
 import axios from "axios";
 
-// replace with your Render backend URL later
-const API_BASE = "https://decentrathon-4-0.onrender.com";
-
 export const analyzeCarImage = async (file) => {
   const formData = new FormData();
   formData.append("file", file);
