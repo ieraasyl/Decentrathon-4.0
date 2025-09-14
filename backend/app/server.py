@@ -172,7 +172,7 @@ async def process_single_image(file: UploadFile, side_name: str = "unknown", max
                     "details": "File contains no data"
                 }
             
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 files_data = {"file": (file.filename, contents, file.content_type or "image/jpeg")}
                 response = await client.post(MODAL_ML_URL, files=files_data)
             
