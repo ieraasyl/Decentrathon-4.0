@@ -32,7 +32,7 @@ IMAGE_CONFIG = {
 VEHICLE_SIDES = ["front", "back", "left", "right"]
 
 # Modal ML service endpoint from environment variable
-MODAL_ML_URL = os.getenv("MODAL_ML_URL", "https://your-default-modal-url.modal.run/predict")
+MODAL_ML_URL = "https://ieraasyl--indrive-vehicle-inspector-fastapi-app.modal.run/predict"
 
 # Initialize FastAPI app
 app = FastAPI(
