@@ -9,10 +9,18 @@ import io
 # -------------------------
 app = modal.App("inDrive-vehicle-inspector")
 
-# Base image with required Python libs
+# Base image with required Python libs - ADDED python-multipart
 image = (
     modal.Image.debian_slim()
-    .pip_install("fastapi", "uvicorn[standard]", "pillow", "numpy", "scikit-learn", "joblib")
+    .pip_install(
+        "fastapi", 
+        "uvicorn[standard]", 
+        "pillow", 
+        "numpy", 
+        "scikit-learn", 
+        "joblib",
+        "python-multipart"  # This is the missing dependency!
+    )
 )
 
 # -------------------------
