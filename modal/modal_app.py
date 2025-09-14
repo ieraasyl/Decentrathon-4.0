@@ -97,13 +97,8 @@ def predict_car_parts(img: Image.Image):
         results = car_parts_model(img)
         detections = []
 
-        # Mapping from detected parts to vehicle sides
-        part_to_side_mapping = {
-            0: "front",
-            1: "left",
-            2: "right",
-            3: "rear"
-        }
+        # Use the model's actual class names instead of hardcoded mapping
+        # Model names: ['front', 'left', 'rear', 'right'] (indices 0,1,2,3)
 
         for r in results:
             for b in r.boxes:
@@ -112,8 +107,8 @@ def predict_car_parts(img: Image.Image):
                 # Get bounding box coordinates
                 xyxy = b.xyxy[0].tolist()  # [x1, y1, x2, y2]
 
-                # Map class to vehicle side
-                vehicle_side = part_to_side_mapping.get(cls, f"unknown_part_{cls}")
+                # Get the actual class name from the model
+                vehicle_side = car_parts_model.names.get(cls, f"unknown_part_{cls}")
 
                 detections.append({
                     "vehicle_side": vehicle_side,
