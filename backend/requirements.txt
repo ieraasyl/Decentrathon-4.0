@@ -1,6 +1,6 @@
-scikit-learn
 fastapi
-numpy
 uvicorn[standard]
-pillow
+httpx
 python-multipart
+pillow
+numpy
