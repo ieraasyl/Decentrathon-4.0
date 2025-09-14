@@ -4,3 +4,6 @@ httpx
 python-multipart
 pillow
 numpy
+torch
+torchvision
+ultralytics

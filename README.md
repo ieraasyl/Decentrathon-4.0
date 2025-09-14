@@ -4,7 +4,9 @@ AI-powered vehicle condition assessment for inDrive. Upload 4 photos of your car
 
 ## ⚡ Quick Start
 
-**Prerequisites:** Docker & Docker Compose installed
+**Prerequisites:** 
+- [Docker](https://docs.docker.com/get-docker/) installed on your machine
+- Docker Compose (included with Docker Desktop)
 
 1. **Clone the repository**
    ```bash
@@ -14,14 +16,12 @@ AI-powered vehicle condition assessment for inDrive. Upload 4 photos of your car
 
 2. **Start the application**
    ```bash
-   docker-compose up
+   docker compose up
    ```
 
 3. **Open in browser**
    - Frontend: http://localhost:5173
    - Backend API: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
-
 That's it! 🎉
 
 ## 🏗️ Architecture
