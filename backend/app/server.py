@@ -13,15 +13,22 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
-# Local ML model imports
-import torch
-import torch.nn as nn
-from torchvision import transforms
-from ultralytics import YOLO
-
-# Configure logging
+# Configure logging first
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Local ML model imports (optional)
+try:
+    import torch
+    import torch.nn as nn
+    from torchvision import transforms
+    from ultralytics import YOLO
+    ML_MODELS_AVAILABLE = True
+    logger.info("✅ ML libraries (torch, ultralytics) loaded successfully")
+except ImportError as e:
+    logger.warning(f"⚠️ ML models not available: {e}")
+    ML_MODELS_AVAILABLE = False
+    torch = None
 
 # Validation configuration
 IMAGE_CONFIG = {
@@ -40,20 +47,23 @@ VEHICLE_SIDES = ["front", "back", "left", "right"]
 # Modal ML service endpoint from environment variable
 MODAL_ML_URL = "https://ieraasyl--indrive-vehicle-inspector-fastapi-app.modal.run/predict"
 
-# Local model paths
-CAR_PARTS_MODEL_PATH = "best_car_parts.pt"
-CLEAN_DIRTY_MODEL_PATH = "efficientnet_binary_clean_dirty.pth"
+# Local model paths - look in models directory
+CAR_PARTS_MODEL_PATH = "/code/models/best_car_parts.pt"
+CLEAN_DIRTY_MODEL_PATH = "/code/models/efficientnet_binary_clean_dirty.pth"
 
 # Global variables for local models
 local_car_parts_model = None
 local_clean_dirty_model = None
 
 # Image preprocessing transforms (same as Modal)
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-])
+if ML_MODELS_AVAILABLE:
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+else:
+    transform = None
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -195,23 +205,51 @@ def load_local_models():
     """Load both models locally: YOLO for car parts and EfficientNet for clean/dirty"""
     global local_car_parts_model, local_clean_dirty_model
     
+    if not ML_MODELS_AVAILABLE:
+        logger.warning("❌ ML models not available - torch/ultralytics not installed")
+        return False
+    
     try:
         # Load YOLO car parts model
+        logger.info(f"🔍 Checking car parts model at {CAR_PARTS_MODEL_PATH}")
         if not os.path.exists(CAR_PARTS_MODEL_PATH):
-            raise FileNotFoundError(f"Car parts model not found at {CAR_PARTS_MODEL_PATH}")
+            logger.warning(f"❌ Car parts model not found at {CAR_PARTS_MODEL_PATH}")
+            # List what's in the models directory
+            models_dir = "/code/models"
+            if os.path.exists(models_dir):
+                files = os.listdir(models_dir)
+                logger.info(f"📁 Files in {models_dir}: {files}")
+            return False
         
-        local_car_parts_model = YOLO(CAR_PARTS_MODEL_PATH)
-        logger.info(f"✅ Car parts model loaded from {CAR_PARTS_MODEL_PATH}")
+        logger.info(f"🚀 Loading YOLO model from {CAR_PARTS_MODEL_PATH}")
+        try:
+            # Temporarily set torch.load defaults for YOLO loading
+            import torch._utils
+            original_load = torch.load
+            torch.load = lambda *args, **kwargs: original_load(*args, **kwargs, weights_only=False) if 'weights_only' not in kwargs else original_load(*args, **kwargs)
+            
+            local_car_parts_model = YOLO(CAR_PARTS_MODEL_PATH)
+            
+            # Restore original torch.load
+            torch.load = original_load
+            
+            logger.info(f"✅ Car parts model loaded successfully from {CAR_PARTS_MODEL_PATH}")
+            logger.info(f"🏷️ Model classes: {list(local_car_parts_model.names.values())}")
+        except Exception as yolo_error:
+            logger.error(f"❌ Failed to load YOLO model: {yolo_error}")
+            return False
         
         # Load clean/dirty model
         if not os.path.exists(CLEAN_DIRTY_MODEL_PATH):
-            raise FileNotFoundError(f"Clean/dirty model not found at {CLEAN_DIRTY_MODEL_PATH}")
+            logger.warning(f"Clean/dirty model not found at {CLEAN_DIRTY_MODEL_PATH}")
+            return False
         
         # Handle both full model and state dict loading
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         try:
-            clean_dirty_model = torch.load(CLEAN_DIRTY_MODEL_PATH, map_location=device)
+            # Load with weights_only=False for trusted model files
+            clean_dirty_model = torch.load(CLEAN_DIRTY_MODEL_PATH, map_location=device, weights_only=False)
             if hasattr(clean_dirty_model, 'eval'):
                 clean_dirty_model.eval()
                 local_clean_dirty_model = clean_dirty_model
@@ -232,52 +270,75 @@ def load_local_models():
                 
         except Exception as model_error:
             logger.error(f"Model loading error: {model_error}")
-            raise
+            return False
         
         logger.info(f"✅ Clean/dirty model loaded from {CLEAN_DIRTY_MODEL_PATH}")
         logger.info(f"✅ Using device: {device}")
+        return True
         
     except Exception as e:
         logger.error(f"❌ Error loading local models: {e}")
-        raise
+        return False
 
 def predict_car_parts_local(img: Image.Image):
     """Predict car parts using local YOLO model"""
+    if not ML_MODELS_AVAILABLE:
+        logger.warning("🚫 ML models not available - torch/ultralytics not installed")
+        return {"error": "ML models not available - torch/ultralytics not installed"}
+    
     try:
+        # Try to load models if not already loaded
         if local_car_parts_model is None:
-            load_local_models()
+            logger.info("🔄 Car parts model not loaded, attempting to load...")
+            success = load_local_models()
+            if not success:
+                logger.error("❌ Failed to load local models")
+                return {"error": "Failed to load car parts model"}
+            
+        # Check if model is still None after loading attempt
+        if local_car_parts_model is None:
+            logger.error("❌ Car parts model is None after loading attempt")
+            return {"error": "Car parts model failed to initialize"}
         
+        logger.info("🔍 Running YOLO inference on image...")
         results = local_car_parts_model(img)
         detections = []
         
         for r in results:
-            for b in r.boxes:
-                cls = int(b.cls)
-                conf = float(b.conf)
-                xyxy = b.xyxy[0].tolist()  # [x1, y1, x2, y2]
-                
-                # Get the actual class name from the model
-                vehicle_side = local_car_parts_model.names.get(cls, f"unknown_part_{cls}")
-                
-                detections.append({
-                    "vehicle_side": vehicle_side,
-                    "confidence": conf,
-                    "bbox": xyxy,
-                    "original_class": cls
-                })
+            if hasattr(r, 'boxes') and r.boxes is not None:
+                for b in r.boxes:
+                    cls = int(b.cls)
+                    conf = float(b.conf)
+                    xyxy = b.xyxy[0].tolist()  # [x1, y1, x2, y2]
+                    
+                    # Get the actual class name from the model
+                    vehicle_side = local_car_parts_model.names.get(cls, f"unknown_part_{cls}")
+                    
+                    detections.append({
+                        "vehicle_side": vehicle_side,
+                        "confidence": conf,
+                        "bbox": xyxy,
+                        "original_class": cls
+                    })
         
+        logger.info(f"✅ YOLO detected {len(detections)} objects")
         return {
             "detections": detections,
             "total_detections": len(detections)
         }
     except Exception as e:
+        logger.error(f"❌ Car parts prediction error: {str(e)}")
         return {"error": f"Car parts prediction failed: {str(e)}"}
 
 def predict_clean_dirty_local(img: Image.Image):
     """Predict clean/dirty using local EfficientNet model"""
+    if not ML_MODELS_AVAILABLE:
+        return {"error": "ML models not available - torch/ultralytics not installed"}
+    
     try:
         if local_clean_dirty_model is None:
-            load_local_models()
+            if not load_local_models():
+                return {"error": "Failed to load clean/dirty model"}
         
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         img_rgb = img.convert("RGB")
@@ -302,14 +363,15 @@ def validate_vehicle_side_match(expected_side: str, detected_side: str, confiden
             "suggestion": f"Please retake the {expected_side} photo with better lighting and angle"
         }
     
-    # Handle alternative names (e.g., back/rear)
-    side_aliases = {
-        "back": "rear",
-        "rear": "back"
-    }
+    # Handle alternative names (e.g., back/rear are equivalent)
+    def normalize_side(side):
+        side_lower = side.lower()
+        if side_lower in ['back', 'rear']:
+            return 'back'  # Normalize both to 'back'
+        return side_lower
     
-    normalized_expected = side_aliases.get(expected_side.lower(), expected_side.lower())
-    normalized_detected = side_aliases.get(detected_side.lower(), detected_side.lower())
+    normalized_expected = normalize_side(expected_side)
+    normalized_detected = normalize_side(detected_side)
     
     if normalized_detected == normalized_expected:
         return {
@@ -487,30 +549,43 @@ def read_root():
 @app.get("/health")
 async def health_check():
     """Enhanced health check with validation configuration"""
-    ml_service_status = "unknown"
+    use_local_models = os.getenv("USE_LOCAL_MODELS", "false").lower() == "true"
     
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            ml_health_url = MODAL_ML_URL.replace('/predict', '/health')
-            response = await client.get(ml_health_url)
-            if response.status_code == 200:
-                ml_service_status = "healthy"
-            else:
-                ml_service_status = "unhealthy"
-    except Exception as e:
-        ml_service_status = f"unreachable: {str(e)}"
+    # Only check Modal API health if we're actually using it
+    ml_service_status = "not_used"
+    if not use_local_models:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                ml_health_url = MODAL_ML_URL.replace('/predict', '/health')
+                response = await client.get(ml_health_url)
+                if response.status_code == 200:
+                    ml_service_status = "healthy"
+                else:
+                    ml_service_status = "unhealthy"
+        except Exception as e:
+            ml_service_status = f"unreachable: {str(e)}"
     
     # Check local models
     local_models_status = {
+        "ml_libraries_available": ML_MODELS_AVAILABLE,
         "car_parts_available": os.path.exists(CAR_PARTS_MODEL_PATH),
         "clean_dirty_available": os.path.exists(CLEAN_DIRTY_MODEL_PATH),
         "car_parts_loaded": local_car_parts_model is not None,
         "clean_dirty_loaded": local_clean_dirty_model is not None,
-        "torch_cuda_available": torch.cuda.is_available()
+        "torch_cuda_available": torch.cuda.is_available() if ML_MODELS_AVAILABLE else False
     }
     
+    # Determine overall health status
+    use_local_models = os.getenv("USE_LOCAL_MODELS", "false").lower() == "true"
+    overall_status = "healthy"
+    
+    if use_local_models:
+        # If using local models, they must be loaded for healthy status
+        if not (local_models_status["car_parts_loaded"] and local_models_status["clean_dirty_loaded"]):
+            overall_status = "unhealthy - models not loaded"
+    
     return {
-        "status": "healthy",
+        "status": overall_status,
         "ml_service_url": MODAL_ML_URL,
         "ml_service_status": ml_service_status,
         "local_models": local_models_status,
@@ -531,6 +606,53 @@ async def health_check():
             "/inspect-vehicle-local": "Full 4-side inspection using local models"
         }
     }
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    """
+    ML inference endpoint using local models (matches Modal API format)
+    """
+    try:
+        # Load models on first request
+        if local_car_parts_model is None or local_clean_dirty_model is None:
+            load_local_models()
+        
+        contents = await file.read()
+        img = Image.open(io.BytesIO(contents)).convert("RGB")
+        
+        # Get predictions from both models
+        car_parts_result = predict_car_parts_local(img)
+        clean_dirty_result = predict_clean_dirty_local(img)
+        
+        # Check for errors
+        if "error" in car_parts_result:
+            return {
+                "error": "Car parts prediction failed",
+                "details": car_parts_result["error"],
+                "filename": file.filename
+            }
+        
+        if "error" in clean_dirty_result:
+            return {
+                "error": "Clean/dirty prediction failed", 
+                "details": clean_dirty_result["error"],
+                "filename": file.filename
+            }
+        
+        return {
+            "filename": file.filename,
+            "car_parts_model": car_parts_result,
+            "clean_dirty_model": clean_dirty_result,
+            "status": "success"
+        }
+        
+    except Exception as e:
+        logger.error(f"Local prediction error: {e}")
+        return {
+            "error": "Failed to process image locally",
+            "details": str(e),
+            "filename": file.filename or "unknown"
+        }
 
 @app.post("/predict-local")
 async def predict_local(file: UploadFile = File(...)):
@@ -858,15 +980,19 @@ async def inspect_vehicle_local(
         recommendations = []
         
         dominant_category = vehicle_condition_summary.get("overall_cleanliness")
+        cleanliness_distribution = vehicle_condition_summary.get("cleanliness_distribution", {})
         
-        if dominant_category == "very dirty":
-            recommendations.append("Schedule a thorough professional cleaning")
-            recommendations.append("Consider deep cleaning interior and exterior")
-        elif dominant_category == "dirty":
-            recommendations.append("Clean your vehicle before providing rides")
-            recommendations.append("Pay attention to heavily soiled areas")
-        elif dominant_category == "slightly dirty":
-            recommendations.append("Quick wash and interior cleaning recommended")
+        # Check for worst-case scenarios first (any very dirty or dirty sides)
+        if cleanliness_distribution.get("very dirty", 0) > 0:
+            recommendations.append("⚠️ Some vehicle parts need thorough cleaning before rides")
+            recommendations.append("Schedule professional cleaning for heavily soiled areas")
+            if cleanliness_distribution.get("very dirty", 0) > 1:
+                recommendations.append("Multiple sides require deep cleaning")
+        elif cleanliness_distribution.get("dirty", 0) > 0:
+            recommendations.append("🧽 Vehicle needs cleaning before providing rides")
+            recommendations.append("Focus on dirty areas for better passenger experience")
+        elif cleanliness_distribution.get("slightly dirty", 0) > 0:
+            recommendations.append("Quick cleaning recommended for optimal appearance")
         elif dominant_category == "clean":
             recommendations.append("Minor touch-ups to maintain excellent condition")
         elif dominant_category == "very clean":
@@ -952,9 +1078,10 @@ async def inspect_vehicle(
     metadata: Optional[str] = Form(None)
 ):
     """
-    Enhanced vehicle inspection with comprehensive validation
+    Enhanced vehicle inspection with comprehensive validation (uses Modal API)
     """
     try:
+        logger.info(f"🚀 /inspect-vehicle called with {len(files)} files - using Modal API")
         # Parse metadata if provided
         request_metadata = {}
         if metadata:
@@ -1024,12 +1151,23 @@ async def inspect_vehicle(
         
         logger.info("All files passed validation, proceeding with ML analysis")
         
-        # Process images through ML service
-        results = []
-        for i, file in enumerate(files):
-            side_name = VEHICLE_SIDES[i]
-            result = await process_single_image(file, side_name)
-            results.append(result)
+        # Check if running in Docker (use local models) or production (use Modal API)
+        use_local_models = os.getenv("USE_LOCAL_MODELS", "false").lower() == "true"
+        
+        if use_local_models:
+            logger.info("🏠 Using local models for processing")
+            results = []
+            for i, file in enumerate(files):
+                side_name = VEHICLE_SIDES[i]
+                result = await process_single_image_local(file, side_name)
+                results.append(result)
+        else:
+            logger.info("☁️ Using Modal API for processing")
+            results = []
+            for i, file in enumerate(files):
+                side_name = VEHICLE_SIDES[i]
+                result = await process_single_image(file, side_name)
+                results.append(result)
         
         # Analyze results
         successful = [r for r in results if "error" not in r]
@@ -1117,15 +1255,19 @@ async def inspect_vehicle(
         recommendations = []
         
         dominant_category = vehicle_condition_summary.get("overall_cleanliness")
+        cleanliness_distribution = vehicle_condition_summary.get("cleanliness_distribution", {})
         
-        if dominant_category == "very dirty":
-            recommendations.append("Schedule a thorough professional cleaning")
-            recommendations.append("Consider deep cleaning interior and exterior")
-        elif dominant_category == "dirty":
-            recommendations.append("Clean your vehicle before providing rides")
-            recommendations.append("Pay attention to heavily soiled areas")
-        elif dominant_category == "slightly dirty":
-            recommendations.append("Quick wash and interior cleaning recommended")
+        # Check for worst-case scenarios first (any very dirty or dirty sides)
+        if cleanliness_distribution.get("very dirty", 0) > 0:
+            recommendations.append("⚠️ Some vehicle parts need thorough cleaning before rides")
+            recommendations.append("Schedule professional cleaning for heavily soiled areas")
+            if cleanliness_distribution.get("very dirty", 0) > 1:
+                recommendations.append("Multiple sides require deep cleaning")
+        elif cleanliness_distribution.get("dirty", 0) > 0:
+            recommendations.append("🧽 Vehicle needs cleaning before providing rides")
+            recommendations.append("Focus on dirty areas for better passenger experience")
+        elif cleanliness_distribution.get("slightly dirty", 0) > 0:
+            recommendations.append("Quick cleaning recommended for optimal appearance")
         elif dominant_category == "clean":
             recommendations.append("Minor touch-ups to maintain excellent condition")
         elif dominant_category == "very clean":
@@ -1215,6 +1357,21 @@ async def global_exception_handler(request, exc):
         "status_code": 500,
         "error_type": "global_exception"
     }
+
+@app.on_event("startup")
+async def startup_event():
+    """Ensure models are loaded before serving requests"""
+    use_local_models = os.getenv("USE_LOCAL_MODELS", "false").lower() == "true"
+    
+    if use_local_models:
+        logger.info("🚀 Startup: Loading local models...")
+        success = load_local_models()
+        if not success:
+            logger.error("❌ Failed to load models during startup")
+            raise Exception("Failed to load required ML models")
+        logger.info("✅ Startup: Local models loaded successfully")
+    else:
+        logger.info("☁️ Startup: Using Modal API, no local model loading required")
 
 if __name__ == "__main__":
     import uvicorn

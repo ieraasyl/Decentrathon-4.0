@@ -6,9 +6,15 @@ const IMAGE_CONFIG = {
   maxSize: 10 * 1024 * 1024, // 10MB
   minSize: 10 * 1024, // 10KB
   allowedTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'],
+  allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
   maxDimension: 4096,
   minDimension: 224,
-  requiredSides: 4
+  requiredSides: 4,
+  maxFileNameLength: 255,
+  suspiciousFileNames: [
+    'script', 'payload', 'exploit', 'hack', 'malware', 'virus',
+    '.exe', '.bat', '.cmd', '.sh', '.ps1', '.scr', '.com', '.pif'
+  ]
 };
 
 const App = () => {
@@ -30,6 +36,7 @@ const App = () => {
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const [currentSide, setCurrentSide] = useState(null);
+  const [sideMismatchWarning, setSideMismatchWarning] = useState(null);
   const fileInputRef = useRef(null);
   const cameraInputRef = useRef(null);
 
@@ -37,10 +44,10 @@ const App = () => {
   const API_BASE_URL = import.meta.env.VITE_API_BASE;
 
   const carSides = [
-    { key: 'front', label: 'Front Side', icon: '🚗', description: 'Front bumper and headlights' },
-    { key: 'back', label: 'Back Side', icon: '🚙', description: 'Rear bumper and taillights' },
-    { key: 'left', label: 'Left Side', icon: '🚘', description: 'Driver side doors and windows' },
-    { key: 'right', label: 'Right Side', icon: '🚖', description: 'Passenger side doors and windows' }
+    { key: 'front', label: 'Front Side', icon: '🚗', description: 'Front bumper and headlights', tip: 'Face the front of the car' },
+    { key: 'back', label: 'Back Side', icon: '🚙', description: 'Rear bumper and taillights', tip: 'Face the back/rear of the car' },
+    { key: 'left', label: 'Left Side', icon: '🚘', description: 'Driver side doors and windows', tip: 'Left side when facing forward' },
+    { key: 'right', label: 'Right Side', icon: '🚖', description: 'Passenger side doors and windows', tip: 'Right side when facing forward' }
   ];
 
   // Helper function to get image dimensions
@@ -301,6 +308,46 @@ const App = () => {
         throw new Error('Invalid response format from server');
       }
 
+      // Check for vehicle side mismatches using the new API format
+      const sideMismatches = [];
+      
+      if (data.side_results) {
+        Object.entries(data.side_results).forEach(([side, result]) => {
+          if (result.validation_status === "failed" && result.validation_error?.error_type === "wrong_side") {
+            const expectedLabel = carSides.find(s => s.key === side)?.label;
+            const detectedSide = result.detected_vehicle_side;
+            const detectedLabel = carSides.find(s => s.key === detectedSide)?.label;
+            
+            console.log('Mismatch detected:', {
+              side,
+              detectedSide,
+              expectedLabel,
+              detectedLabel,
+              result: result.validation_error
+            });
+            
+            sideMismatches.push({
+              expectedSide: side,
+              detectedSide: detectedSide,
+              expectedLabel: expectedLabel,
+              detectedLabel: detectedLabel || detectedSide, // Fallback to detected side
+              confidence: result.detection_confidence,
+              message: result.validation_error.message,
+              suggestion: result.validation_error.suggestion
+            });
+          }
+        });
+      }
+
+      // If there are side mismatches, show warning
+      if (sideMismatches.length > 0) {
+        setSideMismatchWarning({
+          mismatches: sideMismatches,
+          analysisData: data
+        });
+        return; // Stop analysis and show warning modal
+      }
+
       setAnalysis(data);
       
     } catch (err) {
@@ -336,8 +383,8 @@ const App = () => {
   };
 
   const getOverallTrustScore = () => {
-    if (!analysis?.summary?.overall_trust_score) return 0;
-    return Math.round(analysis.summary.overall_trust_score);
+    if (!analysis?.summary?.overall_cleanliness_score) return 0;
+    return Math.round(analysis.summary.overall_cleanliness_score);
   };
 
   const getTrustScoreColor = (score) => {
@@ -348,8 +395,12 @@ const App = () => {
 
   const getConditionDisplay = (condition) => {
     const displays = {
+      'very clean': { text: 'Excellent', color: 'text-lime-400', bg: 'bg-lime-400' },
       'clean': { text: 'Clean', color: 'text-lime-400', bg: 'bg-lime-400' },
-      'dirty': { text: 'Needs Cleaning', color: 'text-yellow-400', bg: 'bg-yellow-400' },
+      'slightly dirty': { text: 'Minor Cleaning', color: 'text-yellow-400', bg: 'bg-yellow-400' },
+      'dirty': { text: 'Needs Cleaning', color: 'text-orange-400', bg: 'bg-orange-400' },
+      'very dirty': { text: 'Deep Cleaning Required', color: 'text-red-400', bg: 'bg-red-400' },
+      // Legacy support
       'scratchless': { text: 'Excellent', color: 'text-lime-400', bg: 'bg-lime-400' },
       'scratched': { text: 'Minor Damage', color: 'text-red-400', bg: 'bg-red-400' }
     };
@@ -383,6 +434,13 @@ const App = () => {
     )
   );
 
+  // Handle cancelling analysis due to side mismatch
+  const fixSideMismatch = () => {
+    setSideMismatchWarning(null);
+    setError('Analysis cancelled. Please upload images to their correct vehicle side slots for accurate results.');
+    setIsAnalyzing(false);
+  };
+
   const uploadedCount = Object.values(photos).filter(Boolean).length;
 
   return (
@@ -406,7 +464,7 @@ const App = () => {
       <div className="p-4 space-y-4 max-w-md mx-auto">
         {/* Photo Upload Grid */}
         <div className="grid grid-cols-2 gap-3">
-          {carSides.map(({ key, label, icon, description }) => (
+          {carSides.map(({ key, label, icon, description, tip }) => (
             <div key={key} className="bg-gray-800 rounded-xl overflow-hidden relative">
               {previewUrls[key] ? (
                 <div className="relative">
@@ -431,7 +489,8 @@ const App = () => {
                 <div className="aspect-square p-4 flex flex-col items-center justify-center text-center">
                   <div className="text-2xl mb-2">{icon}</div>
                   <h3 className="text-white font-medium text-sm mb-1">{label}</h3>
-                  <p className="text-gray-400 text-xs mb-3">{description}</p>
+                  <p className="text-gray-400 text-xs mb-2">{description}</p>
+                  <p className="text-lime-400 text-xs mb-3 font-medium">📍 {tip}</p>
                   <div className="space-y-2 w-full">
                     <button
                       onClick={() => openCamera(key)}
@@ -459,6 +518,62 @@ const App = () => {
 
         {/* Success Message */}
         <SuccessMessage />
+
+        {/* Side Mismatch Warning Modal */}
+        {sideMismatchWarning && (
+          <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50">
+            <div className="bg-gray-800 rounded-2xl p-6 max-w-md w-full">
+              <div className="flex items-start space-x-3 mb-4">
+                <AlertTriangle className="w-6 h-6 text-red-400 mt-0.5 flex-shrink-0" />
+                <div>
+                  <h3 className="text-red-400 font-semibold text-lg mb-2">⛔ Incorrect Image Placement</h3>
+                  <p className="text-gray-300 text-sm mb-4">
+                    Our AI detected incorrect vehicle side placements. You must fix these before proceeding:
+                  </p>
+                </div>
+              </div>
+              
+              <div className="space-y-3 mb-6">
+                {sideMismatchWarning.mismatches.map((mismatch, index) => (
+                  <div key={index} className="bg-yellow-500 bg-opacity-10 border border-yellow-500 border-opacity-30 rounded-lg p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-white text-sm">
+                        <span className="font-medium">{mismatch.expectedLabel}</span> slot
+                      </span>
+                      <span className="text-yellow-400 text-xs">
+                        {Math.round(mismatch.confidence * 100)}% confidence
+                      </span>
+                    </div>
+                    <p className="text-gray-300 text-xs mt-1">
+                      Contains <span className="text-yellow-400 font-medium">{mismatch.detectedLabel || mismatch.detectedSide}</span> view instead
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="text-gray-300 text-sm mb-6">
+                <p className="mb-2">🎯 <strong>For best results:</strong></p>
+                <ul className="text-xs space-y-1 ml-4">
+                  <li>• Upload images to their correct vehicle side slots</li>
+                  <li>• This ensures accurate damage detection and scoring</li>
+                  <li>• Wrong placement may affect your vehicle trust score</li>
+                </ul>
+              </div>
+
+              <div className="space-y-3">
+                <button
+                  onClick={fixSideMismatch}
+                  className="w-full bg-lime-400 text-gray-900 font-semibold py-3 rounded-xl hover:bg-lime-500 transition-colors"
+                >
+                  Fix Images Now
+                </button>
+                <p className="text-center text-gray-400 text-xs">
+                  Analysis blocked until all images are correctly placed
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Analysis Button */}
         {uploadedCount > 0 && !analysis && !isAnalyzing && (
@@ -491,7 +606,7 @@ const App = () => {
             <div className="bg-gray-800 rounded-2xl p-6 text-center">
               <h2 className="text-white text-lg font-semibold mb-4">Overall Assessment</h2>
               <div className={`inline-flex items-center px-6 py-3 rounded-2xl font-bold text-xl ${getTrustScoreColor(getOverallTrustScore())}`}>
-                Trust Score: {getOverallTrustScore()}%
+                Cleanliness Score: {getOverallTrustScore()}%
               </div>
               {analysis.summary?.assessment_message && (
                 <p className="text-gray-300 text-sm mt-3">{analysis.summary.assessment_message}</p>
@@ -518,50 +633,67 @@ const App = () => {
             {/* Individual Results */}
             <div className="space-y-3">
               <h3 className="text-white font-semibold">Detailed Results</h3>
-              {analysis.results && analysis.results.map((result, index) => {
-                const sideInfo = carSides[index];
-                if (!sideInfo || !photos[sideInfo.key] || result.error) {
-                  // Show error results
-                  if (result.error) {
-                    return (
-                      <div key={`error-${index}`} className="bg-red-500 bg-opacity-10 border border-red-500 border-opacity-30 rounded-xl p-4">
-                        <div className="flex items-start space-x-3">
-                          <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
-                          <div>
-                            <p className="text-red-400 font-semibold text-sm">{result.side || 'Unknown Side'} - Processing Failed</p>
-                            <p className="text-gray-300 text-xs">{result.details || result.error}</p>
-                          </div>
+              {analysis.side_results && Object.entries(analysis.side_results).map(([side, result]) => {
+                const sideInfo = carSides.find(s => s.key === side);
+                if (!sideInfo || !photos[side]) return null;
+                
+                // Show error results
+                if (result.processing_status === "failed") {
+                  return (
+                    <div key={`error-${side}`} className="bg-red-500 bg-opacity-10 border border-red-500 border-opacity-30 rounded-xl p-4">
+                      <div className="flex items-start space-x-3">
+                        <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
+                        <div>
+                          <p className="text-red-400 font-semibold text-sm">{sideInfo.label} - Processing Failed</p>
+                          <p className="text-gray-300 text-xs">{result.processing_error}</p>
                         </div>
                       </div>
-                    );
-                  }
-                  return null;
+                    </div>
+                  );
+                }
+
+                // Show validation error results
+                if (result.validation_status === "failed") {
+                  return (
+                    <div key={`validation-${side}`} className="bg-yellow-500 bg-opacity-10 border border-yellow-500 border-opacity-30 rounded-xl p-4">
+                      <div className="flex items-start space-x-3">
+                        <AlertTriangle className="w-5 h-5 text-yellow-400 mt-0.5" />
+                        <div>
+                          <p className="text-yellow-400 font-semibold text-sm">{sideInfo.label} - Validation Issue</p>
+                          <p className="text-gray-300 text-xs">{result.validation_error?.message}</p>
+                          {result.validation_error?.suggestion && (
+                            <p className="text-gray-400 text-xs mt-1">💡 {result.validation_error.suggestion}</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
                 }
                 
                 return (
-                  <div key={sideInfo.key} className="bg-gray-800 rounded-xl p-4">
+                  <div key={side} className="bg-gray-800 rounded-xl p-4">
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center space-x-3">
                         <span className="text-lg">{sideInfo.icon}</span>
                         <span className="text-white font-medium">{sideInfo.label}</span>
                       </div>
-                      <div className={`px-3 py-1 rounded-full text-sm font-medium ${getTrustScoreColor(result.trust_score)}`}>
-                        {result.trust_score}%
+                      <div className={`px-3 py-1 rounded-full text-sm font-medium ${getTrustScoreColor(result.cleanliness_score || 0)}`}>
+                        {result.cleanliness_score || 0}%
                       </div>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-gray-300 text-sm">Condition</span>
                       <div className="flex items-center space-x-2">
-                        <div className={`w-2 h-2 rounded-full ${getConditionDisplay(result.predicted_class).bg}`}></div>
-                        <span className={`text-sm font-medium ${getConditionDisplay(result.predicted_class).color}`}>
-                          {getConditionDisplay(result.predicted_class).text}
+                        <div className={`w-2 h-2 rounded-full ${getConditionDisplay(result.cleanliness_category).bg}`}></div>
+                        <span className={`text-sm font-medium ${getConditionDisplay(result.cleanliness_category).color}`}>
+                          {getConditionDisplay(result.cleanliness_category).text}
                         </span>
                       </div>
                     </div>
-                    {result.confidence && (
+                    {result.detection_confidence && (
                       <div className="flex items-center justify-between mt-2">
-                        <span className="text-gray-400 text-xs">Confidence</span>
-                        <span className="text-gray-300 text-xs">{Math.round(result.confidence * 100)}%</span>
+                        <span className="text-gray-400 text-xs">Detection Confidence</span>
+                        <span className="text-gray-300 text-xs">{Math.round(result.detection_confidence * 100)}%</span>
                       </div>
                     )}
                   </div>
