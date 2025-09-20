@@ -8,11 +8,15 @@ AI-powered vehicle condition assessment for inDrive. Upload 4 photos of your car
 - [Docker](https://docs.docker.com/get-docker/) installed on your machine
 - Docker Compose (included with Docker Desktop)
 
-1. **Clone the repository**
+1. **Clone the repository and download the models**
    ```bash
    git clone https://github.com/ieraasyl/Decentrathon-4.0
    cd Decentrathon-4.0
    ```
+
+   Car masking model (PyTorch): [Link to the model for download](https://drive.google.com/file/d/144_IXtXueFzik6pzqhRvndIizZV-1Zfk/view?usp=drive_link)
+   Damage detection model (ONNX): [Link to the onnx model](https://drive.google.com/file/d/1E_1HjlxkKZFoMLN_LLOEkoqXnzW2hGw6/view?usp=drive_link)
+   Damage detection model (PyTorch): [Link to the pytorch model](https://drive.google.com/file/d/1WGvWEHgGZsKZrbwxfQ8K1lBoYO7XhkYK/view?usp=drive_link)
 
 2. **Start the application**
    ```bash
